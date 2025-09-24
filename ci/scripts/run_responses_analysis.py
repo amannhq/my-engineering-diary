@@ -32,32 +32,45 @@ def _artifact_dir(metadata: Dict[str, Any]) -> Path:
     return Path("ci/daily-reports")
 
 
-def _collect_steps(events: Iterable[Dict[str, Any]]) -> List[str]:
+def _collect_steps(events: Iterable[Any]) -> List[str]:
     steps: List[str] = []
     for event in events:
-        if event.get("type") == "response.output_text.delta":
-            delta = event.get("delta")
-            if delta:
-                steps.append(delta)
+        # Handle both dict and object response formats
+        if hasattr(event, 'get'):  # Dictionary format
+            if event.get("type") == "response.output_text.delta":
+                delta = event.get("delta")
+                if delta:
+                    steps.append(str(delta))
+        elif hasattr(event, 'type'):  # Object format
+            if event.type == "response.output_text.delta" and hasattr(event, 'delta') and event.delta:
+                steps.append(str(event.delta))
     return steps
 
 
-def _extract_request_id(events: Iterable[Dict[str, Any]]) -> str:
+def _extract_request_id(events: Iterable[Any]) -> str:
     for event in events:
-        if event.get("type") == "response.completed":
-            response = event.get("response") or {}
-            response_id = response.get("id")
-            if response_id:
-                return response_id
+        # Handle both dict and tuple response formats
+        if hasattr(event, 'get'):  # Dictionary format
+            if event.get("type") == "response.completed":
+                response = event.get("response") or {}
+                response_id = response.get("id")
+                if response_id:
+                    return str(response_id)
+        elif hasattr(event, 'response'):  # Object format
+            if hasattr(event, 'type') and event.type == "response.completed":
+                if hasattr(event.response, 'id') and event.response.id:
+                    return str(event.response.id)
     return ""
 
 
-def _extract_usage(events: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+def _extract_usage(events: Iterable[Any]) -> Dict[str, int]:
     for event in events:
-        if event.get("type") == "response.completed":
-            response = event.get("response") or {}
-            usage = response.get("usage") or {}
-            return {
+        # Handle both dict and tuple response formats
+        if hasattr(event, 'get'):  # Dictionary format
+            if event.get("type") == "response.completed":
+                response = event.get("response") or {}
+                usage = response.get("usage") or {}
+                return {
                 "prompt": int(usage.get("prompt_tokens", 0) or 0),
                 "completion": int(usage.get("completion_tokens", 0) or 0),
                 "total": int(usage.get("total_tokens", 0) or 0),
