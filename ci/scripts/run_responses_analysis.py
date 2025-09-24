@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List
 
 from openai import OpenAI
-from .prepare_responses_payload import build_payload
+from . import prepare_responses_payload
 
 
 def _emit_log(event: str, **payload: Any) -> None:
@@ -29,9 +28,7 @@ def _emit_log(event: str, **payload: Any) -> None:
     print(json.dumps(entry, default=str))
 
 
-def get_openai_client():  # pragma: no cover - thin wrapper, mocked in tests
-    from openai import OpenAI
-
+def get_openai_client() -> OpenAI:  # pragma: no cover - thin wrapper, mocked in tests
     return OpenAI()
 
 
@@ -126,7 +123,7 @@ def run_daily_analysis(
 
         # Prepare the API payload
         try:
-            payload = prepare_responses_payload(
+            payload = prepare_responses_payload.build_payload(
                 log_path=log_path,
                 sanitized_markdown=sanitized_markdown,
                 goal_ids=goal_ids,
