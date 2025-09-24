@@ -1,2 +1,36 @@
-/.idea
+# IDE & editor caches
+/.idea/
+.vscode/
+.DS_Store
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+
+# Node/npm
+node_modules/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local logs & temp files
+*.log
+*.tmp
+*.swp
+
+# CI generated artifacts (kept outside git)
+ci/daily-reports/
+ci/tmp/
+
+# Secrets (ensure cached copies ignored)
+.env
+.env.*
+secrets.json
+
+# Project notes
 do.md
