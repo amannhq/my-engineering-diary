@@ -89,7 +89,7 @@ jobs:
               )
 
           print("Daily validation completed")
-PY
+          PY
 
       - name: No daily logs changed notice
         if: steps.logs.outputs.logs == ''
