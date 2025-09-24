@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import json
-import datetime as dt
+import os
+import traceback
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
+from openai import OpenAI
 from .prepare_responses_payload import build_payload
 
 
 def _emit_log(event: str, **payload: Any) -> None:
+    """Emit a structured log entry.
+    
+    Args:
+        event: The event name
+        **payload: Additional key-value pairs to include in the log
+    """
     entry: Dict[str, Any] = {
-        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "timestamp": datetime.now(datetime.timezone.utc).isoformat(),
         "event": event,
         **payload,
     }
@@ -71,10 +81,10 @@ def _extract_usage(events: Iterable[Any]) -> Dict[str, int]:
                 response = event.get("response") or {}
                 usage = response.get("usage") or {}
                 return {
-                "prompt": int(usage.get("prompt_tokens", 0) or 0),
-                "completion": int(usage.get("completion_tokens", 0) or 0),
-                "total": int(usage.get("total_tokens", 0) or 0),
-            }
+                    "prompt": int(usage.get("prompt_tokens", 0) or 0),
+                    "completion": int(usage.get("completion_tokens", 0) or 0),
+                    "total": int(usage.get("total_tokens", 0) or 0),
+                }
     return {"prompt": 0, "completion": 0, "total": 0}
 
 
@@ -84,91 +94,216 @@ def run_daily_analysis(
     goal_ids: List[str],
     metadata: Dict[str, Any],
 ) -> Dict[str, Any]:
-    _emit_log(
-        "run_daily_analysis.start",
-        log=str(log_path),
-        model=metadata.get("model", "gpt-4.1"),
-        artifact_dir=metadata.get("artifact_dir"),
-        goal_ids=goal_ids,
-    )
+    """Run daily analysis on the given log.
 
-    payload = build_payload(
-        log_path=log_path,
-        sanitized_markdown=sanitized_markdown,
-        goal_ids=goal_ids,
-        summary=metadata.get("summary", ""),
-        analysis_config={
-            "run_id": metadata.get("run_id", "pending"),
-            "artifact_path": metadata.get("artifact_path"),
-        },
-        sanitization_report=metadata.get("sanitization_report"),
-    )
+    Args:
+        log_path: Path to the log file
+        sanitized_markdown: Sanitized markdown content
+        goal_ids: List of goal IDs
+        metadata: Additional metadata
 
-    _emit_log(
-        "run_daily_analysis.payload_prepared",
-        log=str(log_path),
-        request_id=payload.get("requestId"),
-        warnings=payload.get("warnings", []),
-    )
+    Returns:
+        Dictionary with analysis results
 
-    client = get_openai_client()
-    _emit_log("run_daily_analysis.api_request", log=str(log_path), model=metadata.get("model", "gpt-4.1"))
-    # Convert goal_ids list to comma-separated string for the API
-    goal_ids_str = ",".join(goal_ids) if isinstance(goal_ids, list) else str(goal_ids)
-    
-    events = client.responses.create(
-        model=metadata.get("model", "gpt-4.1"),
-        input=[
-            {
-                "role": "system",
-                "content": metadata.get("system_prompt", "Analyze the daily log."),
-            },
-            {
-                "role": "user",
-                "content": sanitized_markdown,
-            },
-        ],
-        metadata={"goalIds": goal_ids_str, "logRef": str(log_path)},
-    )
+    Raises:
+        ValueError: If the input is invalid or API response is malformed
+        RuntimeError: For any unexpected errors during processing
+    """
+    try:
+        # Input validation
+        if not goal_ids:
+            raise ValueError("No goal IDs provided for analysis")
+        if not sanitized_markdown or not sanitized_markdown.strip():
+            raise ValueError("No content to analyze (empty or invalid markdown)")
 
-    # Convert events to a serializable format
-    events_list = list(events)
-    serializable_events = []
-    
-    for event in events_list:
-        if hasattr(event, 'model_dump'):  # Pydantic v2
-            serializable_events.append(event.model_dump())
-        elif hasattr(event, 'dict'):  # Pydantic v1
-            serializable_events.append(event.dict())
-        elif hasattr(event, 'to_dict'):  # Some custom objects
-            serializable_events.append(event.to_dict())
-        elif hasattr(event, '__dict__'):  # Regular Python objects
-            serializable_events.append(event.__dict__)
-        else:
-            # Fallback to string representation
-            serializable_events.append(str(event))
-    
-    _emit_log(
-        "run_daily_analysis.api_response",
-        log=str(log_path),
-        event_count=len(serializable_events),
-        request_id=_extract_request_id(events_list),  # Use original events for extraction
-    )
+        _emit_log(
+            "run_daily_analysis.start",
+            log=str(log_path),
+            model=metadata.get("model", "gpt-4.1"),
+            artifact_dir=str(_artifact_dir(metadata)),
+            goal_ids=goal_ids,
+        )
 
-    # Write the serializable data to file
-    artifact_dir = _artifact_dir(metadata)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    events_path = artifact_dir / "events.json"
-    events_path.write_text(json.dumps(serializable_events, indent=2, default=str))
-    _emit_log("run_daily_analysis.events_written", log=str(log_path), events_path=str(events_path))
+        # Prepare the API payload
+        try:
+            payload = prepare_responses_payload(
+                log_path=log_path,
+                sanitized_markdown=sanitized_markdown,
+                goal_ids=goal_ids,
+                summary=metadata.get("summary", ""),
+                analysis_config={
+                    "run_id": metadata.get("run_id", f"daily-{log_path.stem}"),
+                    "artifact_path": str(_artifact_dir(metadata)),
+                },
+                sanitization_report=metadata.get("sanitization_report"),
+            )
+        except Exception as e:
+            _emit_log(
+                "run_daily_analysis.payload_error",
+                log=str(log_path),
+                error=str(e),
+                error_type=type(e).__name__,
+                traceback=traceback.format_exc()
+            )
+            raise RuntimeError(f"Failed to prepare API payload: {str(e)}") from e
 
-    usage = _extract_usage(events_list)
-    _emit_log("run_daily_analysis.usage_extracted", log=str(log_path), usage=usage)
+        _emit_log(
+            "run_daily_analysis.payload_prepared",
+            log=str(log_path),
+            request_id=payload.get("requestId"),
+            warnings=payload.get("warnings", []),
+        )
 
-    return {
-        "request_id": _extract_request_id(events_list),
-        "steps": _collect_steps(events_list),
-        "events_path": events_path,
-        "payload": payload,
-        "usage": usage,
-    }
+        # Make API request
+        try:
+            client = get_openai_client()
+            model = metadata.get("model", "gpt-4.1")
+            
+            _emit_log(
+                "run_daily_analysis.api_request",
+                log=str(log_path),
+                model=model,
+                content_length=len(sanitized_markdown)
+            )
+            
+            # Convert goal_ids list to comma-separated string for the API
+            goal_ids_str = ",".join(goal_ids) if isinstance(goal_ids, list) else str(goal_ids)
+            
+            events = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": metadata.get("system_prompt", "Analyze the daily log."),
+                    },
+                    {
+                        "role": "user",
+                        "content": sanitized_markdown,
+                    },
+                ],
+                metadata={"goalIds": goal_ids_str, "logRef": str(log_path)},
+            )
+            
+            if not events:
+                raise ValueError("Empty response received from API")
+                
+        except Exception as e:
+            _emit_log(
+                "run_daily_analysis.api_error",
+                log=str(log_path),
+                error=str(e),
+                error_type=type(e).__name__,
+                traceback=traceback.format_exc()
+            )
+            raise RuntimeError(f"API request failed: {str(e)}") from e
+
+        # Process API response
+        try:
+            events_list = list(events)
+            if not events_list:
+                raise ValueError("No events received in API response")
+                
+            # Convert events to a serializable format
+            serializable_events = []
+            for event in events_list:
+                try:
+                    if hasattr(event, 'model_dump'):  # Pydantic v2
+                        serializable_events.append(event.model_dump())
+                    elif hasattr(event, 'dict'):  # Pydantic v1
+                        serializable_events.append(event.dict())
+                    elif hasattr(event, 'to_dict'):  # Some custom objects
+                        serializable_events.append(event.to_dict())
+                    elif hasattr(event, '__dict__'):  # Regular Python objects
+                        serializable_events.append({k: v for k, v in event.__dict__.items() if not k.startswith('_')})
+                    else:
+                        serializable_events.append(str(event))
+                except Exception as e:
+                    _emit_log(
+                        "run_daily_analysis.event_serialization_warning",
+                        log=str(log_path),
+                        error=str(e),
+                        event_type=str(type(event)),
+                        event_repr=repr(event)[:200]  # First 200 chars to avoid huge logs
+                    )
+                    serializable_events.append({"error": f"Failed to serialize event: {str(e)}"})
+
+            # Extract request ID with fallback
+            request_id = _extract_request_id(events_list) or f"generated-{uuid.uuid4()}"
+            
+            _emit_log(
+                "run_daily_analysis.api_response",
+                log=str(log_path),
+                event_count=len(serializable_events),
+                request_id=request_id,
+            )
+
+            # Ensure artifact directory exists
+            artifact_dir = _artifact_dir(metadata)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write events to file
+            events_path = artifact_dir / "events.json"
+            try:
+                events_path.write_text(json.dumps(serializable_events, indent=2, default=str))
+                _emit_log(
+                    "run_daily_analysis.events_written", 
+                    log=str(log_path), 
+                    events_path=str(events_path),
+                    file_size=events_path.stat().st_size
+                )
+            except Exception as e:
+                _emit_log(
+                    "run_daily_analysis.write_error",
+                    log=str(log_path),
+                    error=str(e),
+                    events_path=str(events_path)
+                )
+                raise RuntimeError(f"Failed to write events to {events_path}: {str(e)}") from e
+
+            # Extract usage information
+            usage = _extract_usage(events_list) or {"prompt": 0, "completion": 0, "total": 0}
+            _emit_log(
+                "run_daily_analysis.usage_extracted", 
+                log=str(log_path), 
+                usage=usage,
+                request_id=request_id
+            )
+
+            # Collect and validate steps
+            steps = _collect_steps(events_list)
+            if not steps:
+                _emit_log(
+                    "run_daily_analysis.no_steps_found",
+                    log=str(log_path),
+                    request_id=request_id,
+                    event_count=len(events_list)
+                )
+            
+            return {
+                "request_id": request_id,
+                "steps": steps,
+                "events_path": events_path,
+                "payload": payload,
+                "usage": usage,
+                "success": True
+            }
+            
+        except Exception as e:
+            _emit_log(
+                "run_daily_analysis.processing_error",
+                log=str(log_path),
+                error=str(e),
+                error_type=type(e).__name__,
+                traceback=traceback.format_exc()
+            )
+            raise RuntimeError(f"Error processing API response: {str(e)}") from e
+            
+    except Exception as e:
+        _emit_log(
+            "run_daily_analysis.failed",
+            log=str(log_path),
+            error=str(e),
+            error_type=type(e).__name__,
+            traceback=traceback.format_exc()
+        )
+        raise  # Re-raise the exception after logging
