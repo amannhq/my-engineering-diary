@@ -49,6 +49,14 @@ jobs:
           LOG_LIST: ${{ steps.logs.outputs.logs }}
         run: |
           set -euo pipefail
+          
+          # Ensure the reports directory exists
+          mkdir -p ci/daily-reports
+          
+          # Create a placeholder file to ensure the directory isn't empty
+          touch "ci/daily-reports/placeholder.txt"
+          echo "No validation reports generated yet" > "ci/daily-reports/placeholder.txt"
+          
           python - <<'PY'
           import os
           import sys
@@ -95,11 +103,27 @@ jobs:
         if: steps.logs.outputs.logs == ''
         run: echo "No daily logs modified in this push."
 
+      - name: List generated artifacts
+        if: steps.logs.outputs.logs != ''
+        run: |
+          echo "Generated artifacts in ci/daily-reports/:"
+          find ci/daily-reports -type f || echo "No files found in ci/daily-reports/"
+          
+          # Ensure at least one file exists for upload
+          if [ ! -d "ci/daily-reports" ] || [ -z "$(find ci/daily-reports -type f -not -path '*/.*')" ]; then
+            echo "No validation reports were generated. Creating a status file..."
+            mkdir -p ci/daily-reports
+            echo "No validation reports were generated for this run." > ci/daily-reports/validation_status.txt
+          fi
+
       - name: Upload daily validation artifacts
         if: steps.logs.outputs.logs != ''
         uses: actions/upload-artifact@v4
         with:
           name: daily-validation-${{ github.run_id }}
           path: |
-            ci/daily-reports/**
+            ci/daily-reports/
           retention-days: 14
+          if-no-files-found: warn
+          compression-level: 6
+          overwrite: true
