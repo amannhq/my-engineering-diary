@@ -1,0 +1,113 @@
+name: Weekly Review
+
+on:
+  schedule:
+    - cron: '0 1 * * 0'
+  workflow_dispatch:
+
+jobs:
+  weekly-review:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai jsonschema
+
+      - name: Validate goals file
+        run: python -m ci.scripts.validate_goals
+
+      - name: Generate weekly insight report
+        id: weekly
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_ORG: ${{ secrets.OPENAI_ORG }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci/daily-reports
+          python -m ci.workflows.weekly_review --reports-dir ci/daily-reports --weekly-dir weekly-review | tee ci/daily-reports/weekly-output.json
+
+      - name: Summarize weekly checklist
+        if: steps.weekly.outcome == 'success'
+        run: |
+          python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+output_path = Path("ci/daily-reports/weekly-output.json")
+data = json.loads(output_path.read_text(encoding="utf-8"))
+
+summary_lines = [
+    f"# Weekly Review — {data['week_id']}",
+    "",
+    f"- Report: {data['report_path']}",
+    f"- Checklist: {data['checklist_path']}",
+    f"- Daily artifacts processed: {data['artifact_count']}",
+    f"- Goal progress entries: {data['goal_progress_entries']}",
+    f"- Partial failures: {data['partial_failures']}"
+]
+
+partials = data.get("partial_failures_detail", [])
+if partials:
+    summary_lines.extend(["", "## Partial failures detail"])
+    for item in partials:
+        summary_lines.append(
+            f"- {item.get('log_ref', 'unknown')}: {', '.join(item.get('issues', [])) or 'No details supplied'}"
+        )
+
+step_summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+step_summary.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+
+print("Checklist summary written to", step_summary)
+print(Path(data['checklist_path']).read_text(encoding="utf-8"))
+PY
+
+      - name: Create or update weekly PR
+        if: steps.weekly.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+import json
+import subprocess
+from pathlib import Path
+
+output_path = Path("ci/daily-reports/weekly-output.json")
+data = json.loads(output_path.read_text(encoding="utf-8"))
+
+cmd = [
+    "bash",
+    "ci/scripts/create_weekly_pr.sh",
+    "--week-id",
+    data["week_id"],
+    "--report-path",
+    str(data["report_path"]),
+    "--checklist-path",
+    str(data["checklist_path"]),
+    "--partial-failures",
+    json.dumps(data.get("partial_failures_detail", [])),
+]
+
+subprocess.run(cmd, check=True)
+PY
+
+      - name: Upload weekly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-review-${{ github.run_id }}
+          path: |
+            ci/daily-reports/
+            weekly-review/
+          retention-days: 21
