@@ -100,6 +100,9 @@ def run_daily_analysis(
 
     client = get_openai_client()
     _emit_log("run_daily_analysis.api_request", log=str(log_path), model=metadata.get("model", "gpt-4.1"))
+    # Convert goal_ids list to comma-separated string for the API
+    goal_ids_str = ",".join(goal_ids) if isinstance(goal_ids, list) else str(goal_ids)
+    
     events = client.responses.create(
         model=metadata.get("model", "gpt-4.1"),
         input=[
@@ -112,7 +115,7 @@ def run_daily_analysis(
                 "content": sanitized_markdown,
             },
         ],
-        metadata={"goalIds": goal_ids, "logRef": str(log_path)},
+        metadata={"goalIds": goal_ids_str, "logRef": str(log_path)},
     )
 
     events_list = list(events)
