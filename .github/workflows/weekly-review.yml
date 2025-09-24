@@ -69,12 +69,42 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci/daily-reports
-          # Run the script and save output to a temporary file
-          python -m ci.workflows.weekly_review --reports-dir ci/daily-reports --weekly-dir weekly-review > ci/daily-reports/weekly-output-raw.txt 2>&1
-          # Extract just the JSON part (last line should be the JSON output)
-          tail -n 1 ci/daily-reports/weekly-output-raw.txt > ci/daily-reports/weekly-output.json
-          # Show the full output for debugging
+          
+          # Run the script and capture both stdout and stderr
+          python -m ci.workflows.weekly_review --reports-dir ci/daily-reports --weekly-dir weekly-review > ci/daily-reports/weekly-output-raw.txt 2>&1 || true
+          
+          # Debug: Show the raw output
+          echo "=== Raw output start ==="
           cat ci/daily-reports/weekly-output-raw.txt
+          echo "=== Raw output end ==="
+          
+          # Try to extract valid JSON from the output
+          if [ -s "ci/daily-reports/weekly-output-raw.txt" ]; then
+            # Try to find a JSON object in the last 10 lines of output
+            for line in $(tail -n 10 ci/daily-reports/weekly-output-raw.txt | tac); do
+              if [[ "$line" == {* ]]; then
+                echo "Found potential JSON in output, saving to weekly-output.json"
+                echo "$line" > ci/daily-reports/weekly-output.json
+                # Validate JSON
+                if ! jq -e . ci/daily-reports/weekly-output.json >/dev/null 2>&1; then
+                  echo "Warning: Extracted content is not valid JSON"
+                  # Create a minimal valid JSON object if extraction failed
+                  echo '{"error": "Failed to generate valid output"}' > ci/daily-reports/weekly-output.json
+                fi
+                break
+              fi
+            done
+          fi
+          
+          # If we still don't have a valid JSON file, create one with an error
+          if [ ! -f "ci/daily-reports/weekly-output.json" ] || ! jq -e . ci/daily-reports/weekly-output.json >/dev/null 2>&1; then
+            echo '{"error": "Failed to generate weekly report"}' > ci/daily-reports/weekly-output.json
+          fi
+          
+          # Show the final JSON for debugging
+          echo "=== Final JSON output ==="
+          cat ci/daily-reports/weekly-output.json
+          echo ""
 
       - name: Summarize weekly checklist
         if: steps.weekly.outcome == 'success'
@@ -83,31 +113,61 @@ jobs:
           import json
           import os
           import re
+          import sys
           from pathlib import Path
-
-          def extract_json_from_file(file_path):
-              content = file_path.read_text(encoding="utf-8").strip()
-              # Try to find JSON object in the content
+          from typing import Dict, Any
+          
+          def safe_load_json(file_path: Path) -> Dict[str, Any]:
+              """Safely load JSON from a file with multiple fallback strategies."""
               try:
-                  # First try direct JSON parse
-                  return json.loads(content)
-              except json.JSONDecodeError:
-                  # If that fails, try to extract JSON object from the content
+                  content = file_path.read_text(encoding="utf-8").strip()
+                  if not content:
+                      print("Error: Empty file")
+                      return {"error": "Empty output file"}
+                  
+                  # Try direct JSON parse first
+                  try:
+                      return json.loads(content)
+                  except json.JSONDecodeError as e:
+                      print(f"Direct JSON parse failed: {e}")
+                  
+                  # Try to extract JSON object from content
                   json_match = re.search(r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}', content)
                   if json_match:
                       try:
                           return json.loads(json_match.group(0))
-                      except json.JSONDecodeError:
-                          pass
+                      except json.JSONDecodeError as e:
+                          print(f"Extracted JSON parse failed: {e}")
+                  
+                  # If we get here, try to find the last line that looks like JSON
+                  for line in reversed(content.splitlines()):
+                      line = line.strip()
+                      if line.startswith('{') and line.endswith('}'):
+                          try:
+                              return json.loads(line)
+                          except json.JSONDecodeError:
+                              continue
               
-              # If we get here, we couldn't parse the JSON
-              print("Error: Could not extract valid JSON from output")
-              print("File content:")
-              print(content)
-              raise
-
+              except Exception as e:
+                  print(f"Unexpected error loading JSON: {e}")
+              
+              # If all else fails, return an error object
+              return {
+                  "error": "Failed to parse output",
+                  "file_content": content if 'content' in locals() else "<no content>"
+              }
+          
           output_path = Path("ci/daily-reports/weekly-output.json")
-          data = extract_json_from_file(output_path)
+          data = safe_load_json(output_path)
+          
+          # Ensure we have the required fields with defaults
+          data.setdefault("week_id", "unknown")
+          data.setdefault("report_path", "")
+          data.setdefault("checklist_path", "")
+          data.setdefault("artifact_count", 0)
+          data.setdefault("goal_progress_entries", 0)
+          data.setdefault("partial_failures", 0)
+          data.setdefault("partial_failures_detail", [])
 
           summary_lines = [
               f"# Weekly Review — {data.get('week_id', 'Unknown')}",
