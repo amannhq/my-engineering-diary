@@ -1,8 +1,7 @@
-"""Utilities for generating weekly insight reports from daily automation artifacts."""
-
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import datetime as dt
 import json
@@ -48,7 +47,6 @@ def _default_week_id(today: dt.date | None = None) -> str:
     else:
         target = today
     return _week_id_from_date(target)
-
 
 def _parse_log_date(log_path: Path) -> dt.date | None:
     match = LOG_FILENAME_PATTERN.match(log_path.name)
@@ -404,6 +402,89 @@ def _extract_usage(events: Iterable[Any]) -> Dict[str, int]:
     return {"prompt": 0, "completion": 0, "total": 0}
 
 
+# --- New robust conversion helpers and serializer ---
+
+def _to_plain(obj: Any) -> Any:
+    """
+    Recursively convert SDK models / objects to plain Python data structures
+    suitable for json.dumps(). Handles:
+      - Pydantic/OpenAI model objects exposing model_dump(...)
+      - dicts, lists, tuples
+      - datetimes -> ISO strings
+      - bytes -> base64 strings
+      - fallback to str(obj) for unknown non-serializables
+    """
+    # None and primitives
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+
+    # datetime/date -> iso
+    if isinstance(obj, dt.datetime) or isinstance(obj, dt.date):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+
+    # bytes -> base64
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return base64.b64encode(bytes(obj)).decode("ascii")
+        except Exception:
+            return str(obj)
+
+    # If it's already a dict-like
+    if isinstance(obj, dict):
+        return {str(k): _to_plain(v) for k, v in obj.items()}
+
+    # If it's a list/tuple/set -> convert each item
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_plain(v) for v in obj]
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(exclude_unset=True)
+            return _to_plain(dumped)
+        except Exception:
+            # fall through to try __dict__
+            pass
+
+    # Some objects might expose .dict() (older patterns) — try that
+    dict_fn = getattr(obj, "dict", None)
+    if callable(dict_fn):
+        try:
+            dumped = dict_fn()
+            return _to_plain(dumped)
+        except Exception:
+            pass
+
+    # As a last resort, try attributes from __dict__
+    if hasattr(obj, "__dict__"):
+        try:
+            return _to_plain(vars(obj))
+        except Exception:
+            pass
+
+    # Fallback: string representation
+    return str(obj)
+
+
+def _serialize_event(event: Any) -> Dict[str, Any]:
+    """
+    Convert an event (which may be a dict, a Pydantic model, or other SDK object)
+    into a JSON-serializable dictionary by delegating to _to_plain() and ensuring
+    a mapping is returned.
+    """
+    plain = _to_plain(event)
+
+    # Ensure the top-level result is a dict (if it's not, wrap it)
+    if isinstance(plain, dict):
+        return plain
+    else:
+        return {"value": plain}
+
+
+# --- Updated _create_weekly_summary to be robust with Responses API return types ---
+
 def _create_weekly_summary(
     week_id: str,
     artifacts: Sequence[Dict[str, Any]],
@@ -446,6 +527,7 @@ def _create_weekly_summary(
         )
     context = "\n".join(lines)
 
+    # Call the Responses API (may return an iterable/stream or a single object)
     events = client.responses.create(
         model=model,
         input=[
@@ -455,16 +537,26 @@ def _create_weekly_summary(
         metadata={"weekId": week_id, **metadata},
     )
 
-    events_list = list(events)
+    # Make robust handling: if `events` is iterable (stream), consume to list,
+    # otherwise treat it as a single response object.
+    try:
+        events_list = list(events)
+    except Exception:
+        events_list = [events]
+
+    # Collect the textual deltas the same way you already do
     summary_text = _collect_content_deltas(events_list)
     request_id = _extract_request_id(events_list)
     usage = _extract_usage(events_list)
+
+    # Convert events to JSON-serializable format (recursively)
+    serialized_events = [_serialize_event(event) for event in events_list]
 
     return {
         "summary": summary_text.strip() or "Weekly synthesis did not return any content.",
         "usage": usage,
         "request_id": request_id,
-        "events": events_list,
+        "events": serialized_events,
     }
 
 
@@ -504,7 +596,13 @@ def process_week(
     weekly_artifact_dir.mkdir(parents=True, exist_ok=True)
 
     events_path = weekly_artifact_dir / "weekly-events.json"
-    events_path.write_text(json.dumps(synthesis.get("events", []), indent=2), encoding="utf-8")
+    try:
+        events_path.write_text(json.dumps(synthesis.get("events", []), indent=2), encoding="utf-8")
+    except TypeError as e:
+        # Fallback: write a simpler representation if serialization fails
+        _emit_log("weekly.events.serialization_error", week_id=week_id, error=str(e))
+        fallback_events = [{"type": "serialization_error", "message": str(e), "event_count": len(synthesis.get("events", []))}]
+        events_path.write_text(json.dumps(fallback_events, indent=2), encoding="utf-8")
 
     summary_path = weekly_artifact_dir / "summary.md"
     summary_path.write_text(synthesis.get("summary", ""), encoding="utf-8")
@@ -576,7 +674,6 @@ def main(argv: Iterable[str] | None = None) -> None:
         "partial_failures_detail": result.get("partial_failures", []),
     }
     print(json.dumps(output, indent=2))
-
 
 if __name__ == "__main__":  # pragma: no cover
     main()
