@@ -59,7 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci/daily-reports
-          python -m ci.workflows.weekly_review --reports-dir ci/daily-reports --weekly-dir weekly-review | tee ci/daily-reports/weekly-output.json
+          # Run the script and save output to a temporary file
+          python -m ci.workflows.weekly_review --reports-dir ci/daily-reports --weekly-dir weekly-review > ci/daily-reports/weekly-output-raw.txt 2>&1
+          # Extract just the JSON part (last line should be the JSON output)
+          tail -n 1 ci/daily-reports/weekly-output-raw.txt > ci/daily-reports/weekly-output.json
+          # Show the full output for debugging
+          cat ci/daily-reports/weekly-output-raw.txt
 
       - name: Summarize weekly checklist
         if: steps.weekly.outcome == 'success'
@@ -67,19 +72,41 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           from pathlib import Path
 
+          def extract_json_from_file(file_path):
+              content = file_path.read_text(encoding="utf-8").strip()
+              # Try to find JSON object in the content
+              try:
+                  # First try direct JSON parse
+                  return json.loads(content)
+              except json.JSONDecodeError:
+                  # If that fails, try to extract JSON object from the content
+                  json_match = re.search(r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}', content)
+                  if json_match:
+                      try:
+                          return json.loads(json_match.group(0))
+                      except json.JSONDecodeError:
+                          pass
+              
+              # If we get here, we couldn't parse the JSON
+              print("Error: Could not extract valid JSON from output")
+              print("File content:")
+              print(content)
+              raise
+
           output_path = Path("ci/daily-reports/weekly-output.json")
-          data = json.loads(output_path.read_text(encoding="utf-8"))
+          data = extract_json_from_file(output_path)
 
           summary_lines = [
-              f"# Weekly Review — {data['week_id']}",
+              f"# Weekly Review — {data.get('week_id', 'Unknown')}",
               "",
-              f"- Report: {data['report_path']}",
-              f"- Checklist: {data['checklist_path']}",
-              f"- Daily artifacts processed: {data['artifact_count']}",
-              f"- Goal progress entries: {data['goal_progress_entries']}",
-              f"- Partial failures: {data['partial_failures']}"
+              f"- Report: {data.get('report_path', 'N/A')}",
+              f"- Checklist: {data.get('checklist_path', 'N/A')}",
+              f"- Daily artifacts processed: {data.get('artifact_count', 0)}",
+              f"- Goal progress entries: {data.get('goal_progress_entries', 0)}",
+              f"- Partial failures: {data.get('partial_failures', 0)}"
           ]
 
           partials = data.get("partial_failures_detail", [])
