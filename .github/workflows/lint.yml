@@ -36,7 +36,13 @@ jobs:
           pip install ruff
 
       - name: Run ruff lint
-        run: ruff check ci scripts tests
+        run: |
+          # Check which directories exist before running ruff
+          if [ -d "ci" ] || [ -d "scripts" ] || [ -d "tests" ]; then
+            ruff check .
+          else
+            echo "No Python files to check in ci/, scripts/, or tests/ directories"
+          fi
 
   shell:
     name: Shell lint (shellcheck)
@@ -50,4 +56,9 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          find ci -name '*.sh' -print0 | xargs -0 -r shellcheck
+          # Only run if there are .sh files in ci/ directory
+          if find ci -name '*.sh' | grep -q .; then
+            find ci -name '*.sh' -print0 | xargs -0 -r shellcheck
+          else
+            echo "No shell scripts found in ci/ directory"
+          fi
