@@ -48,42 +48,47 @@ jobs:
           OPENAI_ORG: ${{ secrets.OPENAI_ORG }}
           LOG_LIST: ${{ steps.logs.outputs.logs }}
         run: |
-          set -e
+          set -euo pipefail
           python - <<'PY'
-import os
-import datetime
-from pathlib import Path
-from ci.workflows.daily_validation import process_log
+          import os
+          import sys
+          import datetime
+          from pathlib import Path
+          
+          # Add project root to Python path
+          sys.path.append(str(Path(__file__).parent.parent.parent))
+          from ci.workflows.daily_validation import process_log
+          
+          logs = [Path(p) for p in os.environ["LOG_LIST"].split()]  # from workflow step
+          for log_path in logs:
+              date_str = log_path.stem.split('.')[0]
+              try:
+                  iso_date = datetime.date.fromisoformat(date_str)
+              except ValueError:
+                  print(f"::warning::Skipping {log_path} - filename missing ISO date prefix")
+                  continue
+              
+              iso_week = iso_date.isocalendar()
+              artifact_dir = Path("ci/daily-reports") / f"{iso_week[0]}-W{iso_week[1]:02d}-{iso_date.weekday() + 1}"
+              artifact_dir.mkdir(parents=True, exist_ok=True)
 
-logs = [Path(p) for p in os.environ["LOG_LIST"].split()]  # from workflow step
-for log_path in logs:
-    date_str = log_path.stem.split('.')[0]
-    try:
-        iso_date = datetime.date.fromisoformat(date_str)
-    except ValueError:
-        print(f"::warning::Skipping {log_path} - filename missing ISO date prefix")
-        continue
-    iso_week = iso_date.isocalendar()
-    artifact_dir = Path("ci/daily-reports") / f"{iso_week[0]}-W{iso_week[1]:02d}-{iso_date.day:02d}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+              result = process_log(
+                  log_path=log_path,
+                  metadata={
+                      "summary": f"Automated analysis for {log_path.name}",
+                      "model": os.getenv("RESPONSES_MODEL", "gpt-4.1"),
+                      "artifact_dir": str(artifact_dir),
+                      "run_id": f"daily-{log_path.stem}",
+                  },
+              )
 
-    result = process_log(
-        log_path=log_path,
-        metadata={
-            "summary": f"Automated analysis for {log_path.name}",
-            "model": os.getenv("RESPONSES_MODEL", "gpt-4.1"),
-            "artifact_dir": str(artifact_dir),
-            "run_id": f"daily-{log_path.stem}",
-        },
-    )
+              summary_path = artifact_dir / "summary.md"
+              summary_path.write_text(
+                  f"# Daily Analysis\n\n- Log: {log_path}\n- Request ID: {result['result'].get('request_id')}\n- Steps: {', '.join(result['result'].get('steps', []))}\n",
+                  encoding="utf-8",
+              )
 
-    summary_path = artifact_dir / "summary.md"
-    summary_path.write_text(
-        f"# Daily Analysis\n\n- Log: {log_path}\n- Request ID: {result['result'].get('request_id')}\n- Steps: {', '.join(result['result'].get('steps', []))}\n",
-        encoding="utf-8",
-    )
-
-print("Daily validation completed")
+          print("Daily validation completed")
 PY
 
       - name: No daily logs changed notice
