@@ -29,6 +29,12 @@ def _emit_log(event: str, **payload: Any) -> None:
 
 
 def get_openai_client() -> OpenAI:  # pragma: no cover - thin wrapper, mocked in tests
+    import os
+    
+    # Only include organization if it's set
+    org_id = os.environ.get("OPENAI_ORG")
+    if org_id and org_id.strip():
+        return OpenAI(organization=org_id.strip())
     return OpenAI()
 
 

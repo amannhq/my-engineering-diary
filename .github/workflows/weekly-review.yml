@@ -41,21 +41,31 @@ jobs:
       - name: Validate goals file
         run: python -m ci.scripts.validate_goals
 
-      - name: Check OPENAI secret is available
+      - name: Check required secrets
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_ORG: ${{ secrets.OPENAI_ORG || '' }}
         run: |
+          # Check for required secrets
           if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "Error: OPENAI_API_KEY secret is not set in repository secrets." >&2
+            echo "::error::OPENAI_API_KEY secret is not set in repository secrets"
             exit 1
           fi
-          echo "OPENAI_API_KEY appears present."
+          
+          # Log which optional secrets are available
+          if [ -n "${OPENAI_ORG:-}" ]; then
+            echo "OPENAI_ORG is set"
+          else
+            echo "OPENAI_ORG is not set (optional)"
+          fi
+          
+          echo "All required secrets are present"
 
       - name: Generate weekly insight report
         id: weekly
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_ORG: ${{ secrets.OPENAI_ORG }}
+          OPENAI_ORG: ${{ secrets.OPENAI_ORG || '' }}
         run: |
           set -euo pipefail
           mkdir -p ci/daily-reports
