@@ -131,18 +131,35 @@ def run_daily_analysis(
         metadata={"goalIds": goal_ids_str, "logRef": str(log_path)},
     )
 
+    # Convert events to a serializable format
     events_list = list(events)
+    serializable_events = []
+    
+    for event in events_list:
+        if hasattr(event, 'model_dump'):  # Pydantic v2
+            serializable_events.append(event.model_dump())
+        elif hasattr(event, 'dict'):  # Pydantic v1
+            serializable_events.append(event.dict())
+        elif hasattr(event, 'to_dict'):  # Some custom objects
+            serializable_events.append(event.to_dict())
+        elif hasattr(event, '__dict__'):  # Regular Python objects
+            serializable_events.append(event.__dict__)
+        else:
+            # Fallback to string representation
+            serializable_events.append(str(event))
+    
     _emit_log(
         "run_daily_analysis.api_response",
         log=str(log_path),
-        event_count=len(events_list),
-        request_id=_extract_request_id(events_list),
+        event_count=len(serializable_events),
+        request_id=_extract_request_id(events_list),  # Use original events for extraction
     )
 
+    # Write the serializable data to file
     artifact_dir = _artifact_dir(metadata)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     events_path = artifact_dir / "events.json"
-    events_path.write_text(json.dumps(events_list, indent=2))
+    events_path.write_text(json.dumps(serializable_events, indent=2, default=str))
     _emit_log("run_daily_analysis.events_written", log=str(log_path), events_path=str(events_path))
 
     usage = _extract_usage(events_list)
