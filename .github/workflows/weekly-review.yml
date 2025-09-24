@@ -41,37 +41,37 @@ jobs:
         if: steps.weekly.outcome == 'success'
         run: |
           python - <<'PY'
-import json
-import os
-from pathlib import Path
+          import json
+          import os
+          from pathlib import Path
 
-output_path = Path("ci/daily-reports/weekly-output.json")
-data = json.loads(output_path.read_text(encoding="utf-8"))
+          output_path = Path("ci/daily-reports/weekly-output.json")
+          data = json.loads(output_path.read_text(encoding="utf-8"))
 
-summary_lines = [
-    f"# Weekly Review — {data['week_id']}",
-    "",
-    f"- Report: {data['report_path']}",
-    f"- Checklist: {data['checklist_path']}",
-    f"- Daily artifacts processed: {data['artifact_count']}",
-    f"- Goal progress entries: {data['goal_progress_entries']}",
-    f"- Partial failures: {data['partial_failures']}"
-]
+          summary_lines = [
+              f"# Weekly Review — {data['week_id']}",
+              "",
+              f"- Report: {data['report_path']}",
+              f"- Checklist: {data['checklist_path']}",
+              f"- Daily artifacts processed: {data['artifact_count']}",
+              f"- Goal progress entries: {data['goal_progress_entries']}",
+              f"- Partial failures: {data['partial_failures']}"
+          ]
 
-partials = data.get("partial_failures_detail", [])
-if partials:
-    summary_lines.extend(["", "## Partial failures detail"])
-    for item in partials:
-        summary_lines.append(
-            f"- {item.get('log_ref', 'unknown')}: {', '.join(item.get('issues', [])) or 'No details supplied'}"
-        )
+          partials = data.get("partial_failures_detail", [])
+          if partials:
+              summary_lines.extend(["", "## Partial failures detail"])
+              for item in partials:
+                  summary_lines.append(
+                      f"- {item.get('log_ref', 'unknown')}: {', '.join(item.get('issues', []) or ['No details supplied'])}"
+                  )
 
-step_summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-step_summary.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+          step_summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          step_summary.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
-print("Checklist summary written to", step_summary)
-print(Path(data['checklist_path']).read_text(encoding="utf-8"))
-PY
+          print("Checklist summary written to", step_summary)
+          print(Path(data['checklist_path']).read_text(encoding="utf-8"))
+          PY
 
       - name: Create or update weekly PR
         if: steps.weekly.outcome == 'success'
@@ -80,30 +80,31 @@ PY
         run: |
           set -euo pipefail
           python - <<'PY'
-import json
-import subprocess
-from pathlib import Path
+          import json
+          import subprocess
+          from pathlib import Path
 
-output_path = Path("ci/daily-reports/weekly-output.json")
-data = json.loads(output_path.read_text(encoding="utf-8"))
+          output_path = Path("ci/daily-reports/weekly-output.json")
+          data = json.loads(output_path.read_text(encoding="utf-8"))
 
-cmd = [
-    "bash",
-    "ci/scripts/create_weekly_pr.sh",
-    "--week-id",
-    data["week_id"],
-    "--report-path",
-    str(data["report_path"]),
-    "--checklist-path",
-    str(data["checklist_path"]),
-    "--partial-failures",
-    json.dumps(data.get("partial_failures_detail", [])),
-]
+          cmd = [
+              "bash",
+              "ci/scripts/create_weekly_pr.sh",
+              "--week-id",
+              data["week_id"],
+              "--report-path",
+              str(data["report_path"]),
+              "--checklist-path",
+              str(data["checklist_path"]),
+              "--partial-failures",
+              json.dumps(data.get("partial_failures_detail", [])),
+          ]
 
-subprocess.run(cmd, check=True)
-PY
+          subprocess.run(cmd, check=True)
+          PY
 
       - name: Upload weekly artifacts
+        if: steps.weekly.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: weekly-review-${{ github.run_id }}
