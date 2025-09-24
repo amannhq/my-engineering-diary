@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -21,7 +21,7 @@ def _emit_log(event: str, **payload: Any) -> None:
         **payload: Additional key-value pairs to include in the log
     """
     entry: Dict[str, Any] = {
-        "timestamp": datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "event": event,
         **payload,
     }
